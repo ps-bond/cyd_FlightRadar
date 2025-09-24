@@ -1,0 +1,128 @@
+esphome:
+  name: cyd-flightradar
+  friendly_name: cyd-flightradar
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "iLaOFkw5jiCOGOn+AqeoEyh2AsgE3wzDxquwgThIUvk="
+
+ota:
+  - platform: esphome
+    password: "e7011bf2781486a3ea1edca40604a93c"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+# This section is for the display itself (ILI9341 driver)
+spi:
+  - id: my_spi
+    clk_pin: GPIO14
+    mosi_pin: GPIO13
+    miso_pin: GPIO12
+
+# Display backlight control
+output:
+  - platform: ledc
+    pin: GPIO21
+    id: display_backlight_output
+
+light:
+  - platform: monochromatic
+    output: display_backlight_output
+    name: "Display Backlight"
+
+# Custom font
+font:
+    file: "gfonts://Arimo"
+    id: my_font
+    size: 20
+
+# A Home Assistant text sensor to get the flight data
+text_sensor:
+  - platform: homeassistant
+    id: flight_data_sensor
+    entity_id: sensor.flightradar24_current_in_area
+
+# This section is for the display's pins
+display:
+  - platform: ili9xxx
+    id: cyd_display
+    model: ILI9341
+    cs_pin: GPIO15
+    dc_pin: GPIO2
+    reset_pin: GPIO4
+
+    invert_colors: false
+
+    # The Cheap Yellow Display uses a separate SPI bus for the touchscreen
+    # You might need to adjust these pins if your board is a different variant
+    # See the pinout diagram for your specific board.
+    # We will not be using the touch screen for this project but the config is often included.
+    # touch_cs_pin: GPIO33 
+    # touch_type: "xpt2046" 
+    
+    # Default VSPI pins
+    # tf_miso_pin: GPIO19
+    # tf_mosi_pin: GPIO23
+    # tf_sck_pin: GPIO18
+    # tf_cs_pin: GPIO5
+
+    # ldr_pin: GPIO34
+
+    # cn1_i2c_sda_pin: GPIO22
+    # cn1_i2c_scl_pin: GPIO27
+    # or vice-versa
+
+    lambda: |-
+      // Clear the screen for a fresh draw
+      it.clear();
+      
+      // Print a title
+      it.print(0, 0, id(my_font), "Flights:");
+      
+      // Get the JSON data from the Home Assistant sensor
+      JsonVariant flights = id(flight_data_sensor).state_json;
+      
+      int y_offset = 20; // Starting position for the first flight
+      
+      if (flights.is_array())
+      {
+        for (auto flight : flights.as<JsonArray>())
+        {
+          // Extract the data for each flight
+          std::string flight_number = flight["flight"];
+          std::string callsign = flight["callsign"];
+          std::string origin = flight["origin_iata"];
+          std::string destination = flight["destination_iata"];
+          std::string altitude = std::to_string(flight["altitude"]);
+
+          // Draw the flight information on the screen
+          it.printf(0, y_offset, id(my_font), "%s (%s)", callsign.c_str(), flight_number.c_str());
+          y_offset += 20;
+          it.printf(0, y_offset, id(my_font), "%s > %s | %s ft", origin.c_str(), destination.c_str(), altitude.c_str());
+          y_offset += 30; // Move down for the next flight
+
+          if (y_offset > it.get_height() - 20)
+          {
+            // Stop if we run out of space on the screen
+            break;
+          }
+        }
+      }
+      else
+      {
+        // If no flights are found, display a message
+        it.print(0, 20, id(my_font), "No flights in area.");
+      }
+
+    
