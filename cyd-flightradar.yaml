@@ -25,7 +25,7 @@ wifi:
 
 # This section is for the display itself (ILI9341 driver)
 spi:
-  - id: my_spi
+  - id: tft
     clk_pin: GPIO14
     mosi_pin: GPIO13
     miso_pin: GPIO12
@@ -40,6 +40,7 @@ light:
   - platform: monochromatic
     output: display_backlight_output
     name: "Display Backlight"
+    restore_mode: ALWAYS_ON
 
 # Custom font
 font:
@@ -47,11 +48,20 @@ font:
     id: my_font
     size: 20
 
+json:
+
+sensor:
+  - platform: homeassistant
+    id: flight_count_sensor
+    entity_id: sensor.flightradar24_current_in_area
+    internal: true
+
 # A Home Assistant text sensor to get the flight data
 text_sensor:
   - platform: homeassistant
     id: flight_data_sensor
     entity_id: sensor.flightradar24_current_in_area
+    attribute: flights
 
 # This section is for the display's pins
 display:
@@ -62,6 +72,16 @@ display:
     dc_pin: GPIO2
     reset_pin: GPIO4
 
+    update_interval: 60s # Or 60000ms. This will redraw the screen every minute.
+    auto_clear_enabled: true
+    transform:
+      swap_xy: true
+      mirror_x: false
+    dimensions:
+      width: 320
+      height: 240
+
+    color_palette: 8BIT
     invert_colors: false
 
     # The Cheap Yellow Display uses a separate SPI bus for the touchscreen
@@ -84,18 +104,31 @@ display:
     # or vice-versa
 
     lambda: |-
+      #include <ArduinoJson.h> // This relies on PlatformIO's automatic library detection
       // Clear the screen for a fresh draw
       it.clear();
       
       // Print a title
-      it.print(0, 0, id(my_font), "Flights:");
-      
-      // Get the JSON data from the Home Assistant sensor
-      JsonVariant flights = id(flight_data_sensor).state_json;
+      if (id(flight_count_sensor).has_state())
+      {
+        it.printf(0, 0, id(my_font), "Flights in area: %.0f", id(flight_count_sensor).state);
+      }
+      else
+      {
+        it.print(0, 0, id(my_font), "Flights:");
+      }
+
+      // The state from the Home Assistant sensor is a string.
+      // We need to parse it into a JSON object.
+      JsonDocument doc;
+      deserializeJson(doc, id(flight_data_sensor).state);
+      JsonVariant flights = doc.as<JsonVariant>();
       
       int y_offset = 20; // Starting position for the first flight
+      int line_height = 20; // Height of one line of text
+      int flight_spacing = 10; // Extra space between flight entries
       
-      if (flights.is_array())
+      if (flights.is<JsonArray>())
       {
         for (auto flight : flights.as<JsonArray>())
         {
@@ -103,14 +136,14 @@ display:
           std::string flight_number = flight["flight"];
           std::string callsign = flight["callsign"];
           std::string origin = flight["origin_iata"];
-          std::string destination = flight["destination_iata"];
-          std::string altitude = std::to_string(flight["altitude"]);
+          std::string destination = flight["destination_iata"];          
+          int altitude = flight["altitude"];
 
           // Draw the flight information on the screen
           it.printf(0, y_offset, id(my_font), "%s (%s)", callsign.c_str(), flight_number.c_str());
-          y_offset += 20;
-          it.printf(0, y_offset, id(my_font), "%s > %s | %s ft", origin.c_str(), destination.c_str(), altitude.c_str());
-          y_offset += 30; // Move down for the next flight
+          y_offset += line_height;
+          it.printf(0, y_offset, id(my_font), "%s > %s | %d ft", origin.c_str(), destination.c_str(), altitude);
+          y_offset += line_height + flight_spacing; // Move down for the next flight
 
           if (y_offset > it.get_height() - 20)
           {
@@ -122,7 +155,7 @@ display:
       else
       {
         // If no flights are found, display a message
-        it.print(0, 20, id(my_font), "No flights in area.");
+        it.print(0, y_offset, id(my_font), "No flights in area.");
       }
 
     
