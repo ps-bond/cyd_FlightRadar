@@ -47,32 +47,23 @@ font:
     file: "gfonts://Arimo"
     id: my_font
     size: 20
+    glyphs:
+      # Include all printable ASCII characters and the degree symbol
+      - " 0123456789!\"#$%&'()*+,-./:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~°"
 
 json:
-
-sensor:
-  - platform: homeassistant
-    id: flight_count_sensor
-    entity_id: sensor.flightradar24_current_in_area
-    internal: true
-
-# A Home Assistant text sensor to get the flight data
-text_sensor:
-  - platform: homeassistant
-    id: flight_data_sensor
-    entity_id: sensor.flightradar24_current_in_area
-    attribute: flights
 
 # This section is for the display's pins
 display:
   - platform: ili9xxx
     id: cyd_display
+    spi_id: tft
     model: ILI9341
     cs_pin: GPIO15
     dc_pin: GPIO2
     reset_pin: GPIO4
 
-    update_interval: 60s # Or 60000ms. This will redraw the screen every minute.
+    update_interval: 15s
     auto_clear_enabled: true
     transform:
       swap_xy: true
@@ -104,58 +95,131 @@ display:
     # or vice-versa
 
     lambda: |-
-      #include <ArduinoJson.h> // This relies on PlatformIO's automatic library detection
       // Clear the screen for a fresh draw
       it.clear();
       
-      // Print a title
+      // Print the title. This will show the count as soon as it's available.
       if (id(flight_count_sensor).has_state())
       {
-        it.printf(0, 0, id(my_font), "Flights in area: %.0f", id(flight_count_sensor).state);
+        it.printf(0, 0, id(my_font), "Flights: %.0f", id(flight_count_sensor).state);
       }
       else
       {
-        it.print(0, 0, id(my_font), "Flights:");
+        it.print(0, 0, id(my_font), "Waiting for data...");
       }
 
-      // The state from the Home Assistant sensor is a string.
-      // We need to parse it into a JSON object.
-      JsonDocument doc;
-      deserializeJson(doc, id(flight_data_sensor).state);
-      JsonVariant flights = doc.as<JsonVariant>();
-      
-      int y_offset = 20; // Starting position for the first flight
-      int line_height = 20; // Height of one line of text
-      int flight_spacing = 10; // Extra space between flight entries
-      
-      if (flights.is<JsonArray>())
+      if (id(flight_data_sensor).has_state())
       {
-        for (auto flight : flights.as<JsonArray>())
+        std::string x = id(flight_data_sensor).raw_state;
+
+        // The 'x' variable is a Python-style string. We must convert it to valid JSON.
+        std::string json_string;
+        json_string.reserve(x.length());
+
+        // This loop converts the Python string representation to a valid JSON string.
+        // It handles single quotes, double quotes inside strings, and the 'None' keyword.
+        for (size_t i = 0; i < x.length(); ++i)
         {
-          // Extract the data for each flight
-          std::string flight_number = flight["flight"];
-          std::string callsign = flight["callsign"];
-          std::string origin = flight["origin_iata"];
-          std::string destination = flight["destination_iata"];          
-          int altitude = flight["altitude"];
-
-          // Draw the flight information on the screen
-          it.printf(0, y_offset, id(my_font), "%s (%s)", callsign.c_str(), flight_number.c_str());
-          y_offset += line_height;
-          it.printf(0, y_offset, id(my_font), "%s > %s | %d ft", origin.c_str(), destination.c_str(), altitude);
-          y_offset += line_height + flight_spacing; // Move down for the next flight
-
-          if (y_offset > it.get_height() - 20)
+          char c = x[i];
+          if (c == '\'')
           {
-            // Stop if we run out of space on the screen
-            break;
+            json_string += '"';
+          }
+          else if (c == '"')
+          {
+            // Escape existing double quotes
+            json_string += "\\\"";
+          }
+          else if (c == 'N' && x.substr(i, 4) == "None")
+          {
+            json_string += "null";
+            i += 3; // Advance loop past 'one'
+          }
+          else
+          {
+            json_string += c;
+          }
+        }
+
+        StaticJsonDocument<8192> doc;
+        DeserializationError error = deserializeJson(doc, json_string);
+        if (error)
+        {
+          ESP_LOGE("json", "deserializeJson() failed: %s", error.c_str());
+          it.print(0, 30, id(my_font), "JSON Error");
+          return;
+        }
+
+        JsonArray flights = doc.as<JsonArray>();
+        if (flights.size() > 0)
+        {
+          int y_offset = 30;
+          for (JsonVariant flight : flights)
+          {
+            // Extract registration, defaulting to "BLOCKED" if null or empty
+            const char* registration = flight["aircraft_registration"].as<const char*>();
+            std::string reg_str = (registration == nullptr || strlen(registration) == 0) ? "BLOCKED" : registration;
+
+            // Extract aircraft model name, defaulting to "N/A" if null
+            const char* model = flight["aircraft_model"].as<const char*>();
+            std::string model_str = (model == nullptr) ? "N/A" : model;
+
+            // Determine flight type (Commercial vs. Private)
+            const char* type_ptr = flight["airline_short"].as<const char*>();
+            if (type_ptr == nullptr || strlen(type_ptr) == 0) { type_ptr = "Private"; }
+
+            // Print the formatted flight information
+            // Line 1: Registration and Model
+            it.printf(0, y_offset, id(my_font), "%s (%s)", reg_str.c_str(), model_str.c_str());
+            y_offset += 20;
+
+            // Line 2: Flight Type
+            it.printf(15, y_offset, id(my_font), "%s", type_ptr);
+            y_offset += 20;
+
+            // Line 3: Origin and Destination, if available
+            const char* origin = flight["airport_origin_code_iata"].as<const char*>();
+            const char* dest = flight["airport_destination_code_iata"].as<const char*>();
+            if (origin != nullptr && dest != nullptr)
+            {
+              it.printf(15, y_offset, id(my_font), "%s > %s", origin, dest);
+              y_offset += 20;
+            }
+
+            // Line 4: Movement Status (Landed or Speed/Heading)
+            if (flight["on_ground"] == 1)
+            {
+              it.printf(15, y_offset, id(my_font), "(On ground)");
+            }
+            else
+            {
+              int speed = flight["ground_speed"];
+              int heading = flight["heading"];
+              it.printf(15, y_offset, id(my_font), "%d kts @ %d%c", speed, heading, 176); // 176 is the degree symbol
+            }
+            y_offset += 25; // Add extra space before the next flight
           }
         }
       }
       else
       {
-        // If no flights are found, display a message
-        it.print(0, y_offset, id(my_font), "No flights in area.");
+        it.print(0, 30, id(my_font), "No flights in area.");
       }
 
-    
+sensor:
+  - platform: homeassistant
+    id: flight_count_sensor
+    entity_id: sensor.flightradar24_current_in_area
+    accuracy_decimals: 0
+    internal: true
+
+# A Home Assistant text sensor to get the flight data
+text_sensor:
+  - platform: homeassistant
+    id: flight_data_sensor
+    entity_id: sensor.flightradar24_current_in_area
+    attribute: flights
+    on_raw_value:
+      then:
+        - lambda: |-
+            ESP_LOGD("flight_data", "Received new flight data from Home Assistant.");
