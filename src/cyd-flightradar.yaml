@@ -47,7 +47,7 @@ light:
 font:
     file: "gfonts://Arimo"
     id: display_font
-    size: 20
+    size: 16
     glyphs:
       # Include all printable ASCII characters and the degree symbol
       - " 0123456789!\"#$%&'()*+,-./:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~°"
@@ -112,35 +112,23 @@ display:
 
       if (id(flight_data_sensor).has_state())
       {
-        std::string x = id(flight_data_sensor).raw_state;
+        std::string json_string = id(flight_data_sensor).raw_state;
 
-        // The 'x' variable is a Python-style string. We must convert it to valid JSON.
-        std::string json_string;
-        json_string.reserve(x.length());
-
-        // This loop converts the Python string representation to a valid JSON string.
-        // It handles single quotes, double quotes inside strings, and the 'None' keyword.
-        for (size_t i = 0; i < x.length(); ++i)
+        // The raw state is a Python-style string. We must convert it to valid JSON.
+        // This is CPU-intensive and a primary risk for watchdog timeouts.
+        // Offloading this to a Home Assistant template sensor is the recommended fix.
+        // This is a slightly more efficient way to do it on-device, but the risk remains.
+        size_t pos = 0;
+        while ((pos = json_string.find('\'', pos)) != std::string::npos) 
         {
-          char c = x[i];
-          if (c == '\'')
-          {
-            json_string += '"';
-          }
-          else if (c == '"')
-          {
-            // Escape existing double quotes
-            json_string += "\\\"";
-          }
-          else if (c == 'N' && x.substr(i, 4) == "None")
-          {
-            json_string += "null";
-            i += 3; // Advance loop past 'one'
-          }
-          else
-          {
-            json_string += c;
-          }
+            json_string.replace(pos, 1, "\"");
+            pos++;
+        }
+        pos = 0;
+        while ((pos = json_string.find("None", pos)) != std::string::npos) 
+        {
+            json_string.replace(pos, 4, "null");
+            pos++;
         }
 
         // By declaring the JsonDocument as static, we allocate its 8KB memory pool
@@ -160,27 +148,41 @@ display:
         {
           // Get screen height and set a safe estimate for the height of one flight block.
           const int screen_height = it.get_height();
-          const int flight_block_height = 90; // Max height: 20+20+20(optional)+25(padding)
+          const int flight_block_height = 68; // Max height: 17+17+17(optional)+17(padding)
           int y_offset = 30;
 
           for (JsonVariant flight : flights)
           {
             // Before drawing, check if the next flight block will fit on the screen.
-            if (y_offset + flight_block_height > screen_height) { break; }
+            if (y_offset + flight_block_height > screen_height) 
+            {
+              break;
+            }
 
             // Use the | operator to provide a default value if the JSON key is missing or null.
             std::string reg_str = flight["aircraft_registration"] | "BLOCKED";
             std::string model_str = flight["aircraft_model"] | "N/A";
-            std::string type_str = flight["airline_short"] | "Private";
+
+            // Check if airline_short is null.
+            // If it is, use airline with a fallback to "Private". Otherwise, use airline_short.
+            std::string type_str;
+            if (flight["airline_short"].isNull()) 
+            {
+              type_str = flight["airline"] | "Private";
+            }
+            else 
+            {
+              type_str = flight["airline_short"].as<const char*>();
+            }
 
             // Print the formatted flight information
             // Line 1: Registration and Model
             it.printf(0, y_offset, id(display_font), "%s (%s)", reg_str.c_str(), model_str.c_str());
-            y_offset += 20;
+            y_offset += 17;
 
             // Line 2: Flight Type
             it.printf(15, y_offset, id(display_font), "%s", type_str.c_str());
-            y_offset += 20;
+            y_offset += 17;
 
             // Line 3: Origin and Destination, if available
             std::string origin = flight["airport_origin_code_iata"] | "";
@@ -188,7 +190,7 @@ display:
             if (!origin.empty() && !dest.empty())
             {
               it.printf(15, y_offset, id(display_font), "%s > %s", origin.c_str(), dest.c_str());
-              y_offset += 20;
+              y_offset += 17;
             }
 
             // Line 4: Movement Status. Use a default of -1.0 to indicate if distance is unavailable.
@@ -220,7 +222,7 @@ display:
                 it.printf(15, y_offset, id(display_font), "%d kts @ %d° %dft", speed, heading, altitude);
               }
             }
-            y_offset += 25; // Add extra space before the next flight
+            y_offset += 21; // Add extra space before the next flight
           }
         }
       }
