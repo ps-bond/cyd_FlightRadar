@@ -1,0 +1,8 @@
+# In your Home Assistant configuration.yaml
+template:
+  - sensor:
+      - name: "FlightRadar24 JSON"
+        unique_id: "flightradar24_json_for_esphome"
+        state: "{{ states('sensor.flightradar24_current_in_area') }}"
+        attributes:
+          flights_json: "{{ state_attr('sensor.flightradar24_current_in_area', 'flights') | to_json }}"

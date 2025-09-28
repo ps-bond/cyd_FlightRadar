@@ -45,11 +45,11 @@ light:
 # Custom font
 font:
     file: "gfonts://Arimo"
-    id: my_font
+    id: display_font
     size: 20
     glyphs:
       # Include all printable ASCII characters and the degree symbol
-      - " 0123456789!\"#$%&'()*+,-./:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~°"
+      - " 0123456789!\"#$%&'()*+,-./:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
 
 json:
 
@@ -101,11 +101,11 @@ display:
       // Print the title. This will show the count as soon as it's available.
       if (id(flight_count_sensor).has_state())
       {
-        it.printf(0, 0, id(my_font), "Flights: %.0f", id(flight_count_sensor).state);
+        it.printf(0, 0, id(display_font), "Flights: %.0f", id(flight_count_sensor).state);
       }
       else
       {
-        it.print(0, 0, id(my_font), "Waiting for data...");
+        it.print(0, 0, id(display_font), "Waiting for data...");
       }
 
       if (id(flight_data_sensor).has_state())
@@ -141,61 +141,81 @@ display:
           }
         }
 
-        StaticJsonDocument<8192> doc;
+        // By declaring the JsonDocument as static, we allocate its 8KB memory pool
+        // only once when the program starts, instead of on the stack every time
+        // this lambda runs. This is a major stack memory optimization.
+        static StaticJsonDocument<8192> doc;
         DeserializationError error = deserializeJson(doc, json_string);
         if (error)
         {
           ESP_LOGE("json", "deserializeJson() failed: %s", error.c_str());
-          it.print(0, 30, id(my_font), "JSON Error");
+          it.print(0, 30, id(display_font), "JSON Error");
           return;
         }
 
         JsonArray flights = doc.as<JsonArray>();
         if (flights.size() > 0)
         {
+          // Get screen height and set a safe estimate for the height of one flight block.
+          const int screen_height = it.get_height();
+          const int flight_block_height = 90; // Max height: 20+20+20(optional)+25(padding)
           int y_offset = 30;
+
           for (JsonVariant flight : flights)
           {
-            // Extract registration, defaulting to "BLOCKED" if null or empty
-            const char* registration = flight["aircraft_registration"].as<const char*>();
-            std::string reg_str = (registration == nullptr || strlen(registration) == 0) ? "BLOCKED" : registration;
+            // Before drawing, check if the next flight block will fit on the screen.
+            if (y_offset + flight_block_height > screen_height) { break; }
 
-            // Extract aircraft model name, defaulting to "N/A" if null
-            const char* model = flight["aircraft_model"].as<const char*>();
-            std::string model_str = (model == nullptr) ? "N/A" : model;
-
-            // Determine flight type (Commercial vs. Private)
-            const char* type_ptr = flight["airline_short"].as<const char*>();
-            if (type_ptr == nullptr || strlen(type_ptr) == 0) { type_ptr = "Private"; }
+            // Use the | operator to provide a default value if the JSON key is missing or null.
+            std::string reg_str = flight["aircraft_registration"] | "BLOCKED";
+            std::string model_str = flight["aircraft_model"] | "N/A";
+            std::string type_str = flight["airline_short"] | "Private";
 
             // Print the formatted flight information
             // Line 1: Registration and Model
-            it.printf(0, y_offset, id(my_font), "%s (%s)", reg_str.c_str(), model_str.c_str());
+            it.printf(0, y_offset, id(display_font), "%s (%s)", reg_str.c_str(), model_str.c_str());
             y_offset += 20;
 
             // Line 2: Flight Type
-            it.printf(15, y_offset, id(my_font), "%s", type_ptr);
+            it.printf(15, y_offset, id(display_font), "%s", type_str.c_str());
             y_offset += 20;
 
             // Line 3: Origin and Destination, if available
-            const char* origin = flight["airport_origin_code_iata"].as<const char*>();
-            const char* dest = flight["airport_destination_code_iata"].as<const char*>();
-            if (origin != nullptr && dest != nullptr)
+            std::string origin = flight["airport_origin_code_iata"].as<std::string>();
+            std::string dest = flight["airport_destination_code_iata"].as<std::string>();
+            if (!origin.empty() && !dest.empty())
             {
-              it.printf(15, y_offset, id(my_font), "%s > %s", origin, dest);
+              it.printf(15, y_offset, id(display_font), "%s > %s", origin.c_str(), dest.c_str());
               y_offset += 20;
             }
 
-            // Line 4: Movement Status (Landed or Speed/Heading)
+            // Line 4: Movement Status. Use a default of -1.0 to indicate if distance is unavailable.
+            float distance = flight["distance"] | -1.0;
             if (flight["on_ground"] == 1)
             {
-              it.printf(15, y_offset, id(my_font), "(On ground)");
+              // Only print distance if it's valid (not our -1.0 sentinel value)
+              if (distance >= 0.0)
+              {
+                it.printf(15, y_offset, id(display_font), "%.1fkm (On ground)", distance);
+              }
+              else
+              {
+                it.printf(15, y_offset, id(display_font), "(On ground)");
+              }
             }
             else
             {
-              int speed = flight["ground_speed"];
-              int heading = flight["heading"];
-              it.printf(15, y_offset, id(my_font), "%d kts @ %d%c", speed, heading, 176); // 176 is the degree symbol
+              int speed = flight["ground_speed"] | 0;
+              int heading = flight["heading"] | 0;
+              // Only print distance if it's valid
+              if (distance >= 0.0)
+              {
+                it.printf(15, y_offset, id(display_font), "%.1fkm %d kts @ %d°", distance, speed, heading);
+              }
+              else
+              {
+                it.printf(15, y_offset, id(display_font), "%d kts @ %d°", speed, heading);
+              }
             }
             y_offset += 25; // Add extra space before the next flight
           }
@@ -203,7 +223,7 @@ display:
       }
       else
       {
-        it.print(0, 30, id(my_font), "No flights in area.");
+        it.print(0, 30, id(display_font), "No flights in area.");
       }
 
 sensor:
