@@ -6,3 +6,10 @@ template:
         state: "{{ states('sensor.flightradar24_current_in_area') }}"
         attributes:
           flights_json: "{{ state_attr('sensor.flightradar24_current_in_area', 'flights') | to_json }}"
+
+      - name: "FlightRadar24 Detection Radius"
+        unique_id: "flightradar24_detection_radius"
+        state: "{{ state_attr('sensor.flightradar24_current_in_area', 'radius') }}"
+        unit_of_measurement: "km"
+        icon: "mdi:map-marker-radius"
+

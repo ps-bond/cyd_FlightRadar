@@ -38,6 +38,7 @@ output:
 
 light:
   - platform: monochromatic
+    id: display_backlight
     output: display_backlight_output
     name: "Display Backlight"
     restore_mode: ALWAYS_ON
@@ -49,8 +50,9 @@ font:
     size: 20
     glyphs:
       # Include all printable ASCII characters and the degree symbol
-      - " 0123456789!\"#$%&'()*+,-./:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+      - " 0123456789!\"#$%&'()*+,-./:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~°"
 
+# Needed to force ESPHome to link in ArduinoJson library
 json:
 
 # This section is for the display's pins
@@ -181,8 +183,8 @@ display:
             y_offset += 20;
 
             // Line 3: Origin and Destination, if available
-            std::string origin = flight["airport_origin_code_iata"].as<std::string>();
-            std::string dest = flight["airport_destination_code_iata"].as<std::string>();
+            std::string origin = flight["airport_origin_code_iata"] | "";
+            std::string dest = flight["airport_destination_code_iata"] | "";
             if (!origin.empty() && !dest.empty())
             {
               it.printf(15, y_offset, id(display_font), "%s > %s", origin.c_str(), dest.c_str());
@@ -207,14 +209,15 @@ display:
             {
               int speed = flight["ground_speed"] | 0;
               int heading = flight["heading"] | 0;
+              int altitude = flight["altitude"] | 0;
               // Only print distance if it's valid
               if (distance >= 0.0)
               {
-                it.printf(15, y_offset, id(display_font), "%.1fkm %d kts @ %d°", distance, speed, heading);
+                it.printf(15, y_offset, id(display_font), "%.1fkm %d kts @ %d° %dft", distance, speed, heading, altitude);
               }
               else
               {
-                it.printf(15, y_offset, id(display_font), "%d kts @ %d°", speed, heading);
+                it.printf(15, y_offset, id(display_font), "%d kts @ %d° %dft", speed, heading, altitude);
               }
             }
             y_offset += 25; // Add extra space before the next flight
@@ -232,6 +235,31 @@ sensor:
     entity_id: sensor.flightradar24_current_in_area
     accuracy_decimals: 0
     internal: true
+  
+  - platform: adc
+    id: ambient_light_sensor
+    pin: GPIO34
+    name: "Ambient Light Level"
+    update_interval: 10s
+    attenuation: auto
+    filters:
+      # The LDR on the CYD board typically gives a lower voltage in bright light
+      # and a higher voltage in darkness. We will map the desired range to a
+      # brightness level between 30% and 100%.
+       - calibrate_linear:
+          - 0.05 -> 0.85  # Brightest condition -> 100% brightness
+          - 0.63 -> 0.2 # Dim condition -> 30% brightness
+      # Clamp the output between 30% and 100% to ensure it's always in a valid range.
+       - clamp:
+          min_value: 0.2
+          max_value: 0.85
+    on_value:
+      then:
+        # Use the calibrated sensor value to set the display backlight brightness.
+        - light.turn_on:
+            id: display_backlight
+            brightness: !lambda 'return x;'
+            transition_length: 2s
 
 # A Home Assistant text sensor to get the flight data
 text_sensor:
