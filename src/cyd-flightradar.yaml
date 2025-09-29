@@ -151,6 +151,9 @@ display:
           const int flight_block_height = 68; // Max height: 17+17+17(optional)+17(padding)
           int y_offset = 30;
 
+          // Define a tolerance for vertical speed to consider flight as "level".
+          static const int vs_level_tolerance = 10;
+
           for (JsonVariant flight : flights)
           {
             // Before drawing, check if the next flight block will fit on the screen.
@@ -212,14 +215,32 @@ display:
               int speed = flight["ground_speed"] | 0;
               int heading = flight["heading"] | 0;
               int altitude = flight["altitude"] | 0;
-              // Only print distance if it's valid
-              if (distance >= 0.0)
+              int vs = flight["vertical_speed"] | 0;
+
+              // Determine vertical speed status string
+              // A tolerance (e.g., +/- 10) prevents flickering between states for minor fluctuations.
+              std::string vs_status;
+              if (vs > vs_level_tolerance)
               {
-                it.printf(15, y_offset, id(display_font), "%.1fkm %d kts @ %d° %dft", distance, speed, heading, altitude);
+                vs_status = "CLM";
+              }
+              else if (vs < -vs_level_tolerance)
+              {
+                vs_status = "DSC";
               }
               else
               {
-                it.printf(15, y_offset, id(display_font), "%d kts @ %d° %dft", speed, heading, altitude);
+                vs_status = "LVL";
+              }
+
+              // Only print distance if it's valid
+              if (distance >= 0.0)
+              {
+                it.printf(15, y_offset, id(display_font), "%.1fkm %d kts @ %d° %dft %s", distance, speed, heading, altitude, vs_status.c_str());
+              }
+              else
+              {
+                it.printf(15, y_offset, id(display_font), "%d kts @ %d° %dft %s", speed, heading, altitude, vs_status.c_str());
               }
             }
             y_offset += 21; // Add extra space before the next flight
