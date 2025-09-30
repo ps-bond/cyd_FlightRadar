@@ -113,29 +113,16 @@ display:
       if (id(flight_data_sensor).has_state())
       {
         std::string json_string = id(flight_data_sensor).raw_state;
+        // The data is now received as a valid JSON string from a Home Assistant template sensor,
+        // so the previous string manipulation is no longer needed.
 
-        // The raw state is a Python-style string. We must convert it to valid JSON.
-        // This is CPU-intensive and a primary risk for watchdog timeouts.
-        // Offloading this to a Home Assistant template sensor is the recommended fix.
-        // This is a slightly more efficient way to do it on-device, but the risk remains.
-        size_t pos = 0;
-        while ((pos = json_string.find('\'', pos)) != std::string::npos) 
-        {
-            json_string.replace(pos, 1, "\"");
-            pos++;
-        }
-        pos = 0;
-        while ((pos = json_string.find("None", pos)) != std::string::npos) 
-        {
-            json_string.replace(pos, 4, "null");
-            pos++;
-        }
+        // For ArduinoJson v7, we create a static memory pool to avoid stack overflow
+        // with large JSON data and to prevent re-allocating the buffer on each run.
+        // 8KB should be sufficient for a large number of flights.
+        static std::vector<char> json_buffer(8192);
+        JsonDocument doc;
+        DeserializationError error = deserializeJson(doc, json_string, DeserializationOption::NestingLimit(10), DeserializationOption::Filter(json_buffer.data(), json_buffer.size()));
 
-        // By declaring the JsonDocument as static, we allocate its 8KB memory pool
-        // only once when the program starts, instead of on the stack every time
-        // this lambda runs. This is a major stack memory optimization.
-        static StaticJsonDocument<8192> doc;
-        DeserializationError error = deserializeJson(doc, json_string);
         if (error)
         {
           ESP_LOGE("json", "deserializeJson() failed: %s", error.c_str());
@@ -263,16 +250,16 @@ sensor:
     id: ambient_light_sensor
     pin: GPIO34
     name: "Ambient Light Level"
-    update_interval: 10s
+    update_interval: 30s
     attenuation: auto
     filters:
       # The LDR on the CYD board typically gives a lower voltage in bright light
       # and a higher voltage in darkness. We will map the desired range to a
-      # brightness level between 30% and 100%.
+      # brightness level between 20% and 100%.
        - calibrate_linear:
           - 0.05 -> 0.85  # Brightest condition -> 100% brightness
-          - 0.63 -> 0.2 # Dim condition -> 30% brightness
-      # Clamp the output between 30% and 100% to ensure it's always in a valid range.
+          - 0.63 -> 0.2 # Dim condition -> 20% brightness
+      # Clamp the output between 20% and 100% to ensure it's always in a valid range.
        - clamp:
           min_value: 0.2
           max_value: 0.85
@@ -288,8 +275,8 @@ sensor:
 text_sensor:
   - platform: homeassistant
     id: flight_data_sensor
-    entity_id: sensor.flightradar24_current_in_area
-    attribute: flights
+    entity_id: sensor.flightradar24_nearest
+    attribute: nearest_flights
     on_raw_value:
       then:
         - lambda: |-
